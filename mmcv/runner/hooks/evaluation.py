@@ -1,7 +1,10 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import os.path as osp
+import shutil
 import warnings
+import tempfile
 from math import inf
+from collections import defaultdict
 
 import torch.distributed as dist
 from torch.nn.modules.batchnorm import _BatchNorm
@@ -203,19 +206,20 @@ class EvalHook(Hook):
         if not self.out_dir:
             self.out_dir = runner.work_dir
 
-        self.file_client = FileClient.infer_client(self.file_client_args,
-                                                   self.out_dir)
+        if self.out_dir is not None:
+            self.file_client = FileClient.infer_client(self.file_client_args,
+                                                    self.out_dir)
 
-        # if `self.out_dir` is not equal to `runner.work_dir`, it means that
-        # `self.out_dir` is set so the final `self.out_dir` is the
-        # concatenation of `self.out_dir` and the last level directory of
-        # `runner.work_dir`
-        if self.out_dir != runner.work_dir:
-            basename = osp.basename(runner.work_dir.rstrip(osp.sep))
-            self.out_dir = self.file_client.join_path(self.out_dir, basename)
-            runner.logger.info(
-                (f'The best checkpoint will be saved to {self.out_dir} by '
-                 f'{self.file_client.name}'))
+            # if `self.out_dir` is not equal to `runner.work_dir`, it means that
+            # `self.out_dir` is set so the final `self.out_dir` is the
+            # concatenation of `self.out_dir` and the last level directory of
+            # `runner.work_dir`
+            if self.out_dir != runner.work_dir:
+                basename = osp.basename(runner.work_dir.rstrip(osp.sep))
+                self.out_dir = self.file_client.join_path(self.out_dir, basename)
+                runner.logger.info(
+                    (f'The best checkpoint will be saved to {self.out_dir} by '
+                    f'{self.file_client.name}'))
 
         if self.save_best is not None:
             if runner.meta is None:
@@ -331,6 +335,9 @@ class EvalHook(Hook):
             best_score = key_score
             runner.meta['hook_msgs']['best_score'] = best_score
 
+            if self.out_dir is None:
+                return  # terminate immediately to ignore subsequent logics
+
             if self.best_ckpt_path and self.file_client.isfile(
                     self.best_ckpt_path):
                 self.file_client.remove(self.best_ckpt_path)
@@ -364,6 +371,13 @@ class EvalHook(Hook):
         for name, val in eval_res.items():
             runner.log_buffer.output[name] = val
         runner.log_buffer.ready = True
+
+        # Record all metrics; will be used for active learning
+        # Added by Tuyen
+        if "all_metrics" not in runner.meta:
+            runner.meta["all_metrics"] = defaultdict(list)
+        for name, val in eval_res.items():
+            runner.meta["all_metrics"][name].append(val)
 
         if self.save_best is not None:
             # If the performance of model is pool, the `eval_res` may be an
@@ -492,7 +506,10 @@ class DistEvalHook(EvalHook):
 
         tmpdir = self.tmpdir
         if tmpdir is None:
-            tmpdir = osp.join(runner.work_dir, '.eval_hook')
+            if runner.work_dir is None:
+                tmpdir = tempfile.mkdtemp()
+            else:
+                tmpdir = osp.join(runner.work_dir, '.eval_hook')
 
         results = self.test_fn(
             runner.model,
@@ -507,3 +524,7 @@ class DistEvalHook(EvalHook):
             # save the best checkpoint
             if self.save_best and key_score:
                 self._save_ckpt(runner, key_score)
+
+        # Remove temp dir if it has not been removed
+        if osp.exists(tmpdir):
+            shutil.rmtree(tmpdir)
