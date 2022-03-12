@@ -101,8 +101,11 @@ class TextLoggerHook(LoggerHook):
                  f'{self.file_client.name} after the training process.'))
 
         self.start_iter = runner.iter
-        self.json_log_path = osp.join(runner.work_dir,
-                                      f'{runner.timestamp}.log.json')
+        if self.out_dir is None:
+            self.json_log_path = None
+        else:
+            self.json_log_path = osp.join(runner.work_dir,
+                                        f'{runner.timestamp}.log.json')
         if runner.meta is not None:
             self._dump_log(runner.meta, runner)
 
@@ -183,6 +186,8 @@ class TextLoggerHook(LoggerHook):
         runner.logger.info(log_str)
 
     def _dump_log(self, log_dict, runner):
+        if self.json_log_path is None:
+            return
         # dump log in json format
         json_log = OrderedDict()
         for k, v in log_dict.items():
